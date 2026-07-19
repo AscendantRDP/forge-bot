@@ -24,9 +24,11 @@ PUBLIC_AI_CHANNEL_ID = 1504177445140693163
 TESTING_AI_CHANNEL_ID = 1513189434600722583  
 STAFF_LOGS_CHANNEL_ID = 1513189104991342712  
 BOT_STATUS_CHANNEL_ID = 1528426741092188273  
-
-# 🔴 GLOBAL BOOSTERS CHANNEL 
 BOOSTER_CHANNEL_ID = 1528436555499307200     
+XP_LOGS_CHANNEL_ID = 1528436555499307200 # Set to your active XP logging channel
+
+# 👑 SECURE PROJECT OWNER DIRECTORY
+OWNER_IDS = [1183794432462573579] 
 
 LEVEL_ROLES = {
     1: 1513178112412618762,
@@ -39,12 +41,12 @@ LEVEL_ROLES = {
 
 # 📜 FIXED MILESTONE PERKS LOOKUP
 LEVEL_PERKS = {
-    1: ["Chatting permissions and base member role"],
-    5: ["Access to trading channels", "Image and file attachment permissions"],
-    10: ["Message reaction permissions"],
-    20: ["GIF permissions"],
-    35: ["External Emoji and Sticker permissions"],
-    50: ["External Apps permissions", "Bypass Slowmode permissions"]
+    1: ["💬 Chatting permissions and base member role"],
+    5: ["🤝 Access to trading channels", "🖼️ Image and file attachment permissions"],
+    10: ["✨ Message reaction permissions"],
+    20: ["🎞️ GIF permissions"],
+    35: ["🤪 External Emoji and Sticker permissions"],
+    50: ["🚀 External Apps permissions", "⏱️ Bypass Slowmode permissions"]
 }
 
 # --- KOYEB PERSISTENT STORAGE DATABASE SETUP ---
@@ -105,7 +107,7 @@ def add_user_xp(user_id, xp_to_add):
         leveled_up = True
     cursor.execute("UPDATE users SET xp = ?, level = ? WHERE user_id = ?", (new_xp, level, user_id))
     conn.commit()
-    return leveled_up, level
+    return leveled_up, level, final_xp, current_multiplier
 
 async def log_to_staff(title, description, color=discord.Color.red(), fields=None):
     """Dispatches backend channel activity and failures to staff logs safely"""
@@ -266,12 +268,26 @@ async def on_message(message):
         return
 
     # ⚔️ PROGRESSION AND LEVEL SYSTEM
-    leveled_up, new_level = add_user_xp(message.author.id, random.randint(15, 25))
+    base_roll = random.randint(15, 25)
+    leveled_up, new_level, final_xp, active_mult = add_user_xp(message.author.id, base_roll)
+    
+    # 📊 Live Real-time XP Logging Dispatcher
+    xp_log_channel = bot.get_channel(XP_LOGS_CHANNEL_ID)
+    if xp_log_channel:
+        try:
+            log_embed = discord.Embed(
+                description=f"📝 **{message.author.name}** gained **{final_xp} XP** in <#{message.channel.id}>\n"
+                            f"*Base: `{base_roll}` | Modifier: `{active_mult}x`*",
+                color=discord.Color.dark_gray()
+            )
+            await xp_log_channel.send(embed=log_embed)
+        except: pass
+
     if leveled_up:
         announcement_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
         if announcement_channel:
             embed = discord.Embed(
-                title="⚔️ LEVEL UP! ⚔️", 
+                title="Level Up", 
                 description=f"GG {message.author.mention}! You just reached **Level {new_level}**!", 
                 color=FORGE_HEX_COLOR
             )
@@ -284,7 +300,7 @@ async def on_message(message):
                         desc_text = f"GG {message.author.mention}! You just hit **Level {new_level}** and unlocked the **{role.name}** rank!\n"
                         
                         if new_level in LEVEL_PERKS:
-                            desc_text += "\n**🔓 PERKS UNLOCKED:**\n" + "\n".join([f"* {perk}" for perk in LEVEL_PERKS[new_level]])
+                            desc_text += "\n**🔓 Perks Unlocked:**\n" + "\n".join([f"* {perk}" for perk in LEVEL_PERKS[new_level]])
                         
                         embed.description = desc_text
                     except Exception as e:
@@ -304,7 +320,7 @@ async def on_message(message):
                 
     await bot.process_commands(message)
 
-# --- APPLICATION COMMANDS ---
+# --- SECURE GLOBAL SLASH ENGINE APPLICATION COMMANDS ---
 @bot.tree.command(name="rank", description="Check your current Level and XP progress.")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
@@ -321,7 +337,7 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     embed.add_field(name="Experience (XP)", value=f"{xp} / {xp_needed}", inline=True)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="boost", description="[STAFF] Launch one of our custom preset server-wide XP boosters.")
+@bot.tree.command(name="boost", description="[OWNER ONLY] Launch one of our custom preset server-wide XP boosters.")
 @app_commands.describe(tier="Choose your booster tier level", hours="How long the event should run in hours")
 @app_commands.choices(tier=[
     app_commands.Choice(name="Tier 1: Iron Boost (1.25x XP — Slight Increase)", value=1),
@@ -329,11 +345,10 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     app_commands.Choice(name="Tier 3: Diamond Boost (2.0x XP — Mega Progression!)", value=3)
 ])
 async def boost(interaction: discord.Interaction, tier: app_commands.Choice[int], hours: int):
-    if not interaction.user.guild_permissions.administrator and interaction.user.id != 1487499108595011798:
-        await interaction.response.send_message("❌ You don't have permission to run events.", ephemeral=True)
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
         return
 
-    # Map choices directly to clean naming schemes and reward percentages
     tier_data = {
         1: {"name": "Tier 1: Iron Boost", "mult": 1.25},
         2: {"name": "Tier 2: Gold Boost", "mult": 1.5},
@@ -355,8 +370,8 @@ async def boost(interaction: discord.Interaction, tier: app_commands.Choice[int]
     booster_channel = bot.get_channel(BOOSTER_CHANNEL_ID)
     if booster_channel:
         embed = discord.Embed(
-            title=f"Global Server Event: {event_name.upper()} Activated! 🚀",
-            description=f"Server Admins just activated a community leveling bonus!\n\n"
+            title=f"🚀 GLOBAL SERVER EVENT: {event_name.upper()} Activated! 🚀",
+            description=f"The dev team just initiated a community-wide leveling bonus!\n\n"
                         f"📊 **Event Multiplier:** `{multiplier}x XP` on all chat messages.\n"
                         f"⏳ **Event Ends:** <t:{expires_at}:F> (<t:{expires_at}:R>)\n\n"
                         f"Get talking, interact with friends, and hit those milestone perks!",
@@ -370,13 +385,13 @@ async def boost(interaction: discord.Interaction, tier: app_commands.Choice[int]
             else:
                 await booster_channel.send(embed=embed)
         except discord.errors.Forbidden:
-            print(f"⚠️ Permissions Block: Missing access to the booster channel ({BOOSTER_CHANNEL_ID}).")
+            print(f"⚠️ Permissions Block: booster channel ({BOOSTER_CHANNEL_ID}).")
 
-@bot.tree.command(name="customboost", description="[STAFF] Launch an custom server-wide XP booster event with unique values.")
-@app_commands.describe(multiplier="Custom multiplier amount (e.g. 1.75, 3.0)", hours="How long the custom event should last in hours")
+@bot.tree.command(name="customboost", description="[OWNER ONLY] Launch a totally custom server XP event with unique modifiers.")
+@app_commands.describe(multiplier="Custom multiplier amount (e.g. 1.75, 3.0)", hours="Booster lifespan in hours")
 async def customboost(interaction: discord.Interaction, multiplier: float, hours: int):
-    if not interaction.user.guild_permissions.administrator and interaction.user.id != 1487499108595011798:
-        await interaction.response.send_message("❌ You don't have permission to configure custom boosters.", ephemeral=True)
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
         return
         
     duration_seconds = hours * 3600
@@ -391,7 +406,7 @@ async def customboost(interaction: discord.Interaction, multiplier: float, hours
     booster_channel = bot.get_channel(BOOSTER_CHANNEL_ID)
     if booster_channel:
         embed = discord.Embed(
-            title="Special Server Event: XP Boost",
+            title="🚀 SPECIAL EVENT ACTIVATED! 🚀",
             description=f"A custom server event has been launched with custom modifiers!\n\n"
                         f"📊 **Event Multiplier:** `{multiplier}x XP` on all active chat messaging.\n"
                         f"⏳ **Event Ends:** <t:{expires_at}:F> (<t:{expires_at}:R>)\n\n"
@@ -406,7 +421,153 @@ async def customboost(interaction: discord.Interaction, multiplier: float, hours
             else:
                 await booster_channel.send(embed=embed)
         except discord.errors.Forbidden:
-            print(f"⚠️ Permissions Block: Missing access to the booster channel ({BOOSTER_CHANNEL_ID}).")
+            print(f"⚠️ Permissions Block: booster channel ({BOOSTER_CHANNEL_ID}).")
+
+@bot.tree.command(name="cancelboost", description="[OWNER ONLY] Instantly terminates any running global server XP boost event.")
+async def cancelboost(interaction: discord.Interaction):
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
+        return
+        
+    cursor.execute("DELETE FROM global_boosters WHERE id = 1")
+    conn.commit()
+    
+    await interaction.response.send_message("🛑 Active global multiplier has been cleared.", ephemeral=True)
+    
+    booster_channel = bot.get_channel(BOOSTER_CHANNEL_ID)
+    if booster_channel:
+        embed = discord.Embed(
+            title="🛑 SERVER XP MULTIPLIER CONCLUDED 🛑",
+            description=f"The active experience point booster event has been brought to a close.\n\n"
+                        f"📊 **Chat Multiplier:** Returned to base level rate (`1.0x XP`).\n"
+                        f"Keep chatting naturally to continue unlocking milestone ranks!",
+            color=discord.Color.red()
+        )
+        try:
+            await booster_channel.send(embed=embed)
+        except: pass
+
+@bot.tree.command(name="resetplayer", description="[OWNER ONLY] Completely clears a specific player's level and XP back to zero.")
+@app_commands.describe(member="The target member to wipe from the database entirely")
+async def resetplayer(interaction: discord.Interaction, member: discord.Member):
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
+        return
+        
+    cursor.execute("DELETE FROM users WHERE user_id = ?", (member.id,))
+    conn.commit()
+    
+    await interaction.response.send_message(f"🧹 Successfully deleted tracking records for **{member.name}**.", ephemeral=True)
+    await update_leaderboard_instance()
+
+@bot.tree.command(name="testengine", description="[OWNER ONLY] Simulates milestone updates, logs, and layout cards for validation.")
+async def testengine(interaction: discord.Interaction):
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    
+    db_status = "🟢 OK"
+    try:
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+    except Exception as e:
+        db_status = f"❌ Error: {e}"
+        
+    asset_status = "🟢 Present" if os.path.exists("Line (FTD).png") else "⚠️ Missing ('Line (FTD).png' not found in root)"
+    
+    alert_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
+    emulation_status = "🟢 Dispatched"
+    if alert_channel:
+        try:
+            mock_embed = discord.Embed(
+                title="Level Up",
+                description=f"GG {interaction.user.mention}! You just hit **Level 5** and unlocked the **Copper** rank!\n\n"
+                            f"**🔓 Perks Unlocked:**\n* 🤝 Access to trading channels\n* 🖼️ Image and file attachment permissions",
+                color=FORGE_HEX_COLOR
+            )
+            if os.path.exists("Line (FTD).png"):
+                banner_file = discord.File("Line (FTD).png", filename="line.png")
+                mock_embed.set_image(url="attachment://line.png")
+                await alert_channel.send(file=banner_file, embed=mock_embed)
+            else:
+                await alert_channel.send(embed=mock_embed)
+        except Exception as e:
+            emulation_status = f"❌ Perm Block or Send Crash: {e}"
+    else:
+        emulation_status = "❌ Failed (Could not fetch channel object)"
+        
+    diag_embed = discord.Embed(
+        title="🛠️ System Diagnostics Summary",
+        description=f"**DB Status:** {db_status}\n"
+                    f"**Divider Asset:** {asset_status}\n"
+                    f"**Milestone Card Emulation:** {emulation_status}\n\n"
+                    f"*Check <#{LEVEL_UP_CHANNEL_ID}> to see how the card layout renders live!*",
+        color=discord.Color.blue()
+    )
+    await interaction.followup.send(embed=diag_embed)
+
+# --- MANUAL DIAGNOSTIC OWNER-ONLY TEXT COMMANDS ---
+@bot.command(name="sync")
+async def manual_sync(ctx):
+    if ctx.author.id in OWNER_IDS:
+        try:
+            synced = await bot.tree.sync()
+            await ctx.send(f"✅ Sync complete! Registered {len(synced)} slash commands globally.")
+        except Exception as e:
+            await ctx.send(f"❌ Sync failed: {e}")
+
+@bot.command(name="givexp")
+async def give_xp_test(ctx, member: discord.Member, amount: int):
+    if ctx.author.id in OWNER_IDS:
+        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (member.id,))
+        cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (member.id,))
+        xp, level = cursor.fetchone()
+        
+        new_xp = xp + amount
+        leveled_up = False
+        while new_xp >= get_xp_needed(level + 1):
+            level += 1
+            leveled_up = True
+            
+        cursor.execute("UPDATE users SET xp = ?, level = ? WHERE user_id = ?", (new_xp, level, member.id))
+        conn.commit()
+        await ctx.send(f"⚡ Injected `{amount} XP` directly to **{member.name}**.")
+        
+        if leveled_up:
+            announcement_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
+            if announcement_channel:
+                embed = discord.Embed(title="Level Up", description=f"GG {member.mention}! You just reached **Level {level}**!", color=FORGE_HEX_COLOR)
+                if level in LEVEL_ROLES:
+                    role = member.guild.get_role(LEVEL_ROLES[level])
+                    if role:
+                        try: await member.add_roles(role)
+                        except: pass
+                        desc = f"GG {member.mention}! You just hit **Level {level}** and unlocked the **{role.name}** rank!\n"
+                        if level in LEVEL_PERKS:
+                            desc += "\n**🔓 Perks Unlocked:**\n" + "\n".join([f"* {p}" for p in LEVEL_PERKS[level]])
+                        embed.description = desc
+                    await update_leaderboard_instance()
+                if os.path.exists("Line (FTD).png"):
+                    banner_file = discord.File("Line (FTD).png", filename="line.png")
+                    embed.set_image(url="attachment://line.png")
+                    await announcement_channel.send(file=banner_file, embed=embed)
+                else:
+                    await announcement_channel.send(embed=embed)
+
+@bot.command(name="setlevel")
+async def set_level_test(ctx, member: discord.Member, target_level: int):
+    if ctx.author.id in OWNER_IDS:
+        floor_xp = 0
+        for lvl in range(1, target_level + 1):
+            floor_xp += get_xp_needed(lvl - 1)
+            
+        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (member.id,))
+        cursor.execute("UPDATE users SET xp = ?, level = ? WHERE user_id = ?", (floor_xp, target_level, member.id))
+        conn.commit()
+        await ctx.send(f"🔮 Shifted data profile! **{member.name}** is now at **Level {target_level}**.")
+        await update_leaderboard_instance()
 
 # Start health check server in background thread, then launch bot
 threading.Thread(target=run_health_server, daemon=True).start()
