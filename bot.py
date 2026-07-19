@@ -48,8 +48,11 @@ LEVEL_PERKS = {
 }
 
 # --- KOYEB PERSISTENT STORAGE DATABASE SETUP ---
-# Connected via the permanent /data mount path to survive code upgrades!
-conn = sqlite3.connect("/data/levels.db")
+# Ensure the destination folder directory actually exists before opening the SQLite stream
+DB_PATH = "/data/levels.db"
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
