@@ -25,8 +25,8 @@ TESTING_AI_CHANNEL_ID = 1513189434600722583
 STAFF_LOGS_CHANNEL_ID = 1513189104991342712  
 BOT_STATUS_CHANNEL_ID = 1528426741092188273  
 
-# 🔴 GLOBAL BOOSTERS CHANNEL (Replace this dummy ID with your real Server Channel ID)
-BOOSTER_CHANNEL_ID = 1528436555499307200     # 🔴 CHANGE THIS: Dedicated global server event logs channel
+# 🔴 GLOBAL BOOSTERS CHANNEL 
+BOOSTER_CHANNEL_ID = 1528436555499307200     
 
 LEVEL_ROLES = {
     1: 1513178112412618762,
@@ -48,7 +48,6 @@ LEVEL_PERKS = {
 }
 
 # --- KOYEB PERSISTENT STORAGE DATABASE SETUP ---
-# Ensure the destination folder directory actually exists before opening the SQLite stream
 DB_PATH = "/data/levels.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -56,7 +55,7 @@ conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS global_boosters (id INTEGER PRIMARY KEY, multiplier REAL DEFAULT 1.0, expires_at INTEGER DEFAULT 0)")
+cursor.execute("CREATE TABLE IF NOT EXISTS global_boosters (id INTEGER PRIMARY KEY, multiplier REAL DEFAULT 1.0, name TEXT, expires_at INTEGER DEFAULT 0)")
 conn.commit()
 
 # --- RAILWAY/KOYEB PING KEEP-ALIVE SERVER ---
@@ -109,17 +108,20 @@ def add_user_xp(user_id, xp_to_add):
     return leveled_up, level
 
 async def log_to_staff(title, description, color=discord.Color.red(), fields=None):
-    """Utility to instantly dispatch system event logging data over to staff logs"""
+    """Dispatches backend channel activity and failures to staff logs safely"""
     logs_channel = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
     if logs_channel:
         embed = discord.Embed(title=title, description=description, color=color)
         if fields:
             for name, val in fields.items():
                 embed.add_field(name=name, value=str(val), inline=False)
-        await logs_channel.send(embed=embed)
+        try:
+            await logs_channel.send(embed=embed)
+        except discord.errors.Forbidden:
+            print(f"⚠️ Permissions Block: Missing access to the staff log channel ({STAFF_LOGS_CHANNEL_ID}).")
 
 async def update_leaderboard_instance():
-    """Fires dynamically only when a major level milestone occurs to prevent API spam"""
+    """Updates the leaderboard message when members hit rank milestones"""
     channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
     if not channel: return
     
@@ -130,8 +132,8 @@ async def update_leaderboard_instance():
     live_timestamp = f"<t:{current_unix_time}:R>"
     
     embed = discord.Embed(
-        title="Forge: Tower Defense - Leaderboard", 
-        description=f"Last synchronized: {live_timestamp}\n*Updates dynamically on level milestone milestones.*\n\n", 
+        title="🏆 Forge: Tower Defense — Top Players", 
+        description=f"Synced {live_timestamp}\n*Refreshes whenever someone hits a milestone level.*\n\n", 
         color=FORGE_HEX_COLOR
     )
     
@@ -142,7 +144,7 @@ async def update_leaderboard_instance():
         leaderboard_text += f"{medals[index]} <@{user_id}> • **Level {level}** ({xp} XP)\n"
         
     if not leaderboard_text: 
-        leaderboard_text = "*No data recorded yet.*"
+        leaderboard_text = "*Nobody on the board yet. Start chatting to claim #1!*"
         
     embed.description += leaderboard_text
     
@@ -155,48 +157,54 @@ async def update_leaderboard_instance():
             return
         except: pass
         
-    new_msg = await channel.send(embed=embed)
-    cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('leaderboard_msg_id', ?)", (str(new_msg.id),))
-    conn.commit()
+    try:
+        new_msg = await channel.send(embed=embed)
+        cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('leaderboard_msg_id', ?)", (str(new_msg.id),))
+        conn.commit()
+    except discord.errors.Forbidden:
+        print(f"⚠️ Permissions Block: Missing access to the leaderboard channel ({LEADERBOARD_CHANNEL_ID}).")
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
     await bot.tree.sync()
     
-    # 📢 Live Bot Uptime Engine Card Setup
+    # 📢 Live Bot Uptime Card Setup
     status_channel = bot.get_channel(BOT_STATUS_CHANNEL_ID)
     if status_channel:
         current_unix_time = int(time.time())
         status_embed = discord.Embed(
-            title="Forge TD - Bot Status",
-            description=f"🟢 **Online**\n\nSystems fully operational.\nCore Engine booted <t:{current_unix_time}:R>.",
+            title="Forge TD Bot Status",
+            description=f"🟢 **Online**\n\nAll systems are fully functional.\nFired up <t:{current_unix_time}:R>.",
             color=discord.Color.green()
         )
         
         cursor.execute("SELECT value FROM system_config WHERE key = 'status_msg_id'")
         status_msg_row = cursor.fetchone()
-        if status_msg_row:
-            try:
-                msg = await status_channel.fetch_message(int(status_msg_row[0]))
-                await msg.edit(status_embed)
-            except:
+        
+        try:
+            if status_msg_row:
+                try:
+                    msg = await status_channel.fetch_message(int(status_msg_row[0]))
+                    await msg.edit(embed=status_embed)
+                except:
+                    new_status = await status_channel.send(embed=status_embed)
+                    cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('status_msg_id', ?)", (str(new_status.id),))
+            else:
                 new_status = await status_channel.send(embed=status_embed)
                 cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('status_msg_id', ?)", (str(new_status.id),))
-        else:
-            new_status = await status_channel.send(embed=status_embed)
-            cursor.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('status_msg_id', ?)", (str(new_status.id),))
-        conn.commit()
+            conn.commit()
+        except discord.errors.Forbidden:
+            print(f"⚠️ Permissions Block: Missing access to the status channel ({BOT_STATUS_CHANNEL_ID}).")
 
-    # Initial layout validation check on startup
     await update_leaderboard_instance()
-    await log_to_staff("🟢 System Online", "Forge TD Core Engine initialized successfully.", discord.Color.green())
+    await log_to_staff("🟢 Bot Is Online", "Forge TD levelling and chatbot structures loaded smoothly.", discord.Color.green())
 
 @bot.event
 async def on_message(message):
     if message.author.bot: return
 
-    # 🤖 CHATBOT CHANNELS INTERCEPTION (No ping needed, handles strict channel rules)
+    # 🤖 CHATBOT CHANNELS INTERCEPTION
     if message.channel.id in [PUBLIC_AI_CHANNEL_ID, TESTING_AI_CHANNEL_ID]:
         if message.reference and message.reference.cached_message:
             replied_to = message.reference.cached_message
@@ -235,21 +243,23 @@ async def on_message(message):
                 )
                 await message.reply(response.text)
                 await log_to_staff(
-                    title="AI Generation Log",
-                    description=f"Prompt processed in **#{channel_type} AI Chat**",
+                    title="🤖 AI Chat Response",
+                    description=f"Handled a prompt inside the **#{channel_type} AI Chat**",
                     color=discord.Color.blue(),
                     fields={
                         "User": f"{message.author} (`{message.author.id}`)",
-                        "Input": message.content[:500],
-                        "Output Length": f"{len(response.text)} characters"
+                        "What they said": message.content[:500],
+                        "Response Length": f"{len(response.text)} characters"
                     }
                 )
             except Exception as e:
                 error_trace = traceback.format_exc()
-                await message.reply("Processing error. Details routed to logs.")
+                try:
+                    await message.reply("Ran into an issue processing that. Staff have been notified!")
+                except: pass
                 await log_to_staff(
-                    title="❌ AI Generation Exception",
-                    description=f"Failed execution block inside prompt loop.",
+                    title="❌ AI Chat Error",
+                    description=f"Something broke inside the chatbot channel processing loop.",
                     color=discord.Color.red(),
                     fields={"User": message.author, "Error": str(e), "Traceback": f"```python\n{error_trace[:1000]}\n```"}
                 )
@@ -261,38 +271,36 @@ async def on_message(message):
         announcement_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
         if announcement_channel:
             embed = discord.Embed(
-                title="Level Up", 
-                description=f"GG {message.author.mention}! You just hit **Level {new_level}**!", 
+                title="⚔️ LEVEL UP! ⚔️", 
+                description=f"GG {message.author.mention}! You just reached **Level {new_level}**!", 
                 color=FORGE_HEX_COLOR
             )
             
-            # Milestone Level Logic Handling
             if new_level in LEVEL_ROLES:
                 role = message.guild.get_role(LEVEL_ROLES[new_level])
                 if role:
                     try: 
-                        # Give them the milestone role completely silently in the background
                         await message.author.add_roles(role)
                         desc_text = f"GG {message.author.mention}! You just hit **Level {new_level}** and unlocked the **{role.name}** rank!\n"
                         
-                        # Add hardcoded perk list if it exists for this milestone level
                         if new_level in LEVEL_PERKS:
                             desc_text += "\n**🔓 PERKS UNLOCKED:**\n" + "\n".join([f"* {perk}" for perk in LEVEL_PERKS[new_level]])
                         
                         embed.description = desc_text
                     except Exception as e:
-                        await log_to_staff("⚠️ Role Assignment Failure", f"Could not give role to {message.author.mention}.\nError: {e}", discord.Color.orange())
+                        await log_to_staff("⚠️ Role Grant Failed", f"Could not give the {role.name} role to {message.author.mention}.\nError: {e}", discord.Color.orange())
                 
-                # Push automated dashboard sync since someone achieved a major rank milestone
                 await update_leaderboard_instance()
             
-            # Frame with custom image divider asset
-            if os.path.exists("Line (FTD).png"):
-                banner_file = discord.File("Line (FTD).png", filename="line.png")
-                embed.set_image(url="attachment://line.png")
-                await announcement_channel.send(file=banner_file, embed=embed)
-            else:
-                await announcement_channel.send(embed=embed)
+            try:
+                if os.path.exists("Line (FTD).png"):
+                    banner_file = discord.File("Line (FTD).png", filename="line.png")
+                    embed.set_image(url="attachment://line.png")
+                    await announcement_channel.send(file=banner_file, embed=embed)
+                else:
+                    await announcement_channel.send(embed=embed)
+            except discord.errors.Forbidden:
+                print(f"⚠️ Permissions Block: Missing access to the level up channel ({LEVEL_UP_CHANNEL_ID}).")
                 
     await bot.process_commands(message)
 
@@ -303,47 +311,102 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     cursor.execute("SELECT xp, level FROM users WHERE user_id = ?", (target.id,))
     res = cursor.fetchone()
     if not res:
-        await interaction.response.send_message("No chat history!", ephemeral=True)
+        await interaction.response.send_message("You haven't chatted enough to earn a rank yet!", ephemeral=True)
         return
     xp, level = res
     xp_needed = get_xp_needed(level + 1)
     
-    embed = discord.Embed(title=f"📊 {target.display_name}'s Rank", color=FORGE_HEX_COLOR)
-    embed.add_field(name="Level", value=str(level), inline=True)
-    embed.add_field(name="XP", value=f"{xp} / {xp_needed}", inline=True)
+    embed = discord.Embed(title=f"📊 {target.display_name}'s Progress", color=FORGE_HEX_COLOR)
+    embed.add_field(name="Current Level", value=str(level), inline=True)
+    embed.add_field(name="Experience (XP)", value=f"{xp} / {xp_needed}", inline=True)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="booster", description="[STAFF ONLY] Activate a server-wide experience point booster event.")
-@app_commands.describe(multiplier="Multiplier amount (e.g. 1.5, 2.0)", hours="Booster duration in hours")
-async def booster(interaction: discord.Interaction, multiplier: float, hours: int):
+@bot.tree.command(name="boost", description="[STAFF] Launch one of our custom preset server-wide XP boosters.")
+@app_commands.describe(tier="Choose your booster tier level", hours="How long the event should run in hours")
+@app_commands.choices(tier=[
+    app_commands.Choice(name="Tier 1: Iron Boost (1.25x XP — Slight Increase)", value=1),
+    app_commands.Choice(name="Tier 2: Gold Boost (1.5x XP — Solid Bonus)", value=2),
+    app_commands.Choice(name="Tier 3: Diamond Boost (2.0x XP — Mega Progression!)", value=3)
+])
+async def boost(interaction: discord.Interaction, tier: app_commands.Choice[int], hours: int):
     if not interaction.user.guild_permissions.administrator and interaction.user.id != 1487499108595011798:
-        await interaction.response.send_message("❌ Access denied. Staff auth required.", ephemeral=True)
+        await interaction.response.send_message("❌ You don't have permission to run events.", ephemeral=True)
         return
-        
+
+    # Map choices directly to clean naming schemes and reward percentages
+    tier_data = {
+        1: {"name": "Tier 1: Iron Boost", "mult": 1.25},
+        2: {"name": "Tier 2: Gold Boost", "mult": 1.5},
+        3: {"name": "Tier 3: Diamond Boost", "mult": 2.0}
+    }
+    
+    selected = tier_data[tier.value]
+    multiplier = selected["mult"]
+    event_name = selected["name"]
+    
     duration_seconds = hours * 3600
     expires_at = int(time.time()) + duration_seconds
     
-    cursor.execute("INSERT OR REPLACE INTO global_boosters (id, multiplier, expires_at) VALUES (1, ?, ?)", (multiplier, expires_at))
+    cursor.execute("INSERT OR REPLACE INTO global_boosters (id, multiplier, name, expires_at) VALUES (1, ?, ?, ?)", (multiplier, event_name, expires_at))
     conn.commit()
     
-    await interaction.response.send_message(f"✅ Booster set to **{multiplier}x** for **{hours} hours**.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Fired up **{event_name}** ({multiplier}x) for the next **{hours} hours**.", ephemeral=True)
     
     booster_channel = bot.get_channel(BOOSTER_CHANNEL_ID)
     if booster_channel:
         embed = discord.Embed(
-            title="Global XP Server Boost!",
-            description=f"Attention community members! An official server event is live!\n\n"
-                        f"📊 **Multiplier:** `{multiplier}x XP` on all active chat messaging.\n"
-                        f"⏳ **Ends:** <t:{expires_at}:F> (<t:{expires_at}:R>)\n\n"
-                        f"Get chatting, play strategic, and hit those milestone ranks!",
+            title=f"Global Server Event: {event_name.upper()} Activated! 🚀",
+            description=f"Server Admins just activated a community leveling bonus!\n\n"
+                        f"📊 **Event Multiplier:** `{multiplier}x XP` on all chat messages.\n"
+                        f"⏳ **Event Ends:** <t:{expires_at}:F> (<t:{expires_at}:R>)\n\n"
+                        f"Get talking, interact with friends, and hit those milestone perks!",
             color=discord.Color.gold()
         )
-        if os.path.exists("Line (FTD).png"):
-            banner_file = discord.File("Line (FTD).png", filename="line.png")
-            embed.set_image(url="attachment://line.png")
-            await booster_channel.send(file=banner_file, embed=embed)
-        else:
-            await booster_channel.send(embed=embed)
+        try:
+            if os.path.exists("Line (FTD).png"):
+                banner_file = discord.File("Line (FTD).png", filename="line.png")
+                embed.set_image(url="attachment://line.png")
+                await booster_channel.send(file=banner_file, embed=embed)
+            else:
+                await booster_channel.send(embed=embed)
+        except discord.errors.Forbidden:
+            print(f"⚠️ Permissions Block: Missing access to the booster channel ({BOOSTER_CHANNEL_ID}).")
+
+@bot.tree.command(name="customboost", description="[STAFF] Launch an custom server-wide XP booster event with unique values.")
+@app_commands.describe(multiplier="Custom multiplier amount (e.g. 1.75, 3.0)", hours="How long the custom event should last in hours")
+async def customboost(interaction: discord.Interaction, multiplier: float, hours: int):
+    if not interaction.user.guild_permissions.administrator and interaction.user.id != 1487499108595011798:
+        await interaction.response.send_message("❌ You don't have permission to configure custom boosters.", ephemeral=True)
+        return
+        
+    duration_seconds = hours * 3600
+    expires_at = int(time.time()) + duration_seconds
+    event_name = f"Custom {multiplier}x Boost"
+    
+    cursor.execute("INSERT OR REPLACE INTO global_boosters (id, multiplier, name, expires_at) VALUES (1, ?, ?, ?)", (multiplier, event_name, expires_at))
+    conn.commit()
+    
+    await interaction.response.send_message(f"✅ Active! **{multiplier}x XP** custom modifier is running for the next **{hours} hours**.", ephemeral=True)
+    
+    booster_channel = bot.get_channel(BOOSTER_CHANNEL_ID)
+    if booster_channel:
+        embed = discord.Embed(
+            title="Special Server Event: XP Boost",
+            description=f"A custom server event has been launched with custom modifiers!\n\n"
+                        f"📊 **Event Multiplier:** `{multiplier}x XP` on all active chat messaging.\n"
+                        f"⏳ **Event Ends:** <t:{expires_at}:F> (<t:{expires_at}:R>)\n\n"
+                        f"Time to get active, chat it up, and grind out those milestone perks!",
+            color=discord.Color.purple()
+        )
+        try:
+            if os.path.exists("Line (FTD).png"):
+                banner_file = discord.File("Line (FTD).png", filename="line.png")
+                embed.set_image(url="attachment://line.png")
+                await booster_channel.send(file=banner_file, embed=embed)
+            else:
+                await booster_channel.send(embed=embed)
+        except discord.errors.Forbidden:
+            print(f"⚠️ Permissions Block: Missing access to the booster channel ({BOOSTER_CHANNEL_ID}).")
 
 # Start health check server in background thread, then launch bot
 threading.Thread(target=run_health_server, daemon=True).start()
