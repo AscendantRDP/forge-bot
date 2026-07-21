@@ -488,19 +488,26 @@ async def on_message(message):
                     )
         except Exception as e:
             error_trace = traceback.format_exc()
+            error_str = str(e)
+            is_quota_error = "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower()
+
             try:
-                await message.reply("Ran into an issue processing that. It's been logged!")
+                if is_quota_error:
+                    await message.reply("hit my daily message limit — should be back tomorrow, sorry!", mention_author=False)
+                else:
+                    await message.reply("Ran into an issue processing that. It's been logged!")
             except Exception:
                 pass
+
             await log_to_channel(
                 AI_ERROR_LOGS_CHANNEL_ID,
-                title="❌ AI Chat Error",
-                description="Something broke while generating a reply.",
-                color=discord.Color.red(),
+                title="⚠️ Gemini Daily Quota Exceeded" if is_quota_error else "❌ AI Chat Error",
+                description="Hit the Gemini API's free-tier daily request limit." if is_quota_error else "Something broke while generating a reply.",
+                color=discord.Color.orange() if is_quota_error else discord.Color.red(),
                 fields={
                     "User": f"{message.author} (`{message.author.id}`)",
                     "Channel": f"<#{message.channel.id}> ({channel_label})",
-                    "Error": str(e),
+                    "Error": error_str[:500],
                     "Traceback": f"```python\n{error_trace[:1000]}\n```"
                 }
             )
