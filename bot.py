@@ -3,9 +3,10 @@ import time
 import asyncio
 import traceback
 import threading
+import datetime
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from google import genai
 from google.genai import types
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -23,23 +24,23 @@ if not GEMINI_KEY:
 
 # --- Channels ---
 # Where members actually talk to the bot.
-PUBLIC_AI_CHANNEL_ID = int(os.environ.get("1504177445140693163", "0"))
+PUBLIC_AI_CHANNEL_ID = int(os.environ.get("PUBLIC_AI_CHANNEL_ID", "0"))
 # A staff-only channel (restrict it via Discord permissions, not the bot) to try
 # out persona changes before flipping them on for everyone.
-TESTING_AI_CHANNEL_ID = int(os.environ.get("1513189434600722583", "0"))
+TESTING_AI_CHANNEL_ID = int(os.environ.get("TESTING_AI_CHANNEL_ID", "0"))
 
 # --- Staff-facing logs ---
 # Every single exchange (message + reply) gets logged here.
-AI_GENERATION_LOGS_CHANNEL_ID = int(os.environ.get("1513188964566040586", "0"))
+AI_GENERATION_LOGS_CHANNEL_ID = int(os.environ.get("AI_GENERATION_LOGS_CHANNEL_ID", "0"))
 # Only messages the classifier flags as inappropriate get logged here.
-AI_ABUSE_LOGS_CHANNEL_ID = int(os.environ.get("1528471022335164516", "0"))
+AI_ABUSE_LOGS_CHANNEL_ID = int(os.environ.get("AI_ABUSE_LOGS_CHANNEL_ID", "0"))
 
 # --- Owner-only logs ---
-AI_ERROR_LOGS_CHANNEL_ID = int(os.environ.get("1513189104991342712", "0"))
+AI_ERROR_LOGS_CHANNEL_ID = int(os.environ.get("AI_ERROR_LOGS_CHANNEL_ID", "0"))
 
 # --- Permissions ---
 # OWNER_IDS: comma-separated Discord user IDs, e.g. "123456789012345678,987654321098765432"
-_owner_ids_raw = os.environ.get("1425950244968857701,1183794432462573579", "")
+_owner_ids_raw = os.environ.get("OWNER_IDS", "")
 OWNER_IDS = [int(uid.strip()) for uid in _owner_ids_raw.split(",") if uid.strip().isdigit()]
 if not OWNER_IDS:
     print("⚠️ OWNER_IDS is not set (or invalid) — persona-editing commands will reject everyone until you set it.")
@@ -47,6 +48,42 @@ if not OWNER_IDS:
 
 def is_owner(user_id: int) -> bool:
     return user_id in OWNER_IDS
+
+
+# --- Weekend XP booster role automation ---
+# This role should be the one you've set up in Arcane as a "booster role" —
+# Arcane handles the actual XP multiplier, this bot's only job is adding it to
+# everyone on Friday and removing it Monday, on a schedule.
+WEEKEND_BOOST_ROLE_ID = int(os.environ.get("WEEKEND_BOOST_ROLE_ID", "0"))
+# Optional — posts an announcement when the boost starts/ends. Leave the env
+# var unset if you don't want an announcement.
+WEEKEND_BOOST_ANNOUNCE_CHANNEL_ID = int(os.environ.get("WEEKEND_BOOST_ANNOUNCE_CHANNEL_ID", "0"))
+
+# Times are evaluated in UTC — adjust these four to match when you actually
+# want the boost live in your community's local time.
+# weekday(): Monday=0 ... Sunday=6
+WEEKEND_START_WEEKDAY = 4   # Friday
+WEEKEND_START_HOUR = 18     # 6 PM UTC
+WEEKEND_END_WEEKDAY = 0     # Monday
+WEEKEND_END_HOUR = 0        # midnight UTC
+
+WEEKEND_STATE_PATH = "/data/weekend_boost_state.txt"
+os.makedirs(os.path.dirname(WEEKEND_STATE_PATH), exist_ok=True)
+
+
+def load_weekend_state() -> str:
+    if os.path.exists(WEEKEND_STATE_PATH):
+        try:
+            with open(WEEKEND_STATE_PATH, "r", encoding="utf-8") as f:
+                return f.read().strip() or "inactive"
+        except Exception:
+            pass
+    return "inactive"
+
+
+def save_weekend_state(state: str):
+    with open(WEEKEND_STATE_PATH, "w", encoding="utf-8") as f:
+        f.write(state)
 
 
 # --- AI channel anti-spam cooldown ---
@@ -155,6 +192,7 @@ def run_health_server():
 # ============================================================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # needed to add/remove the weekend boost role across all members
 bot = commands.Bot(command_prefix="!", intents=intents)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
@@ -199,12 +237,107 @@ async def classify_message(content: str) -> bool:
 
 
 # ============================================================
+# WEEKEND XP BOOSTER ROLE AUTOMATION
+# ============================================================
+def _now_in_weekend_window(now_utc: datetime.datetime) -> bool:
+    weekday, hour = now_utc.weekday(), now_utc.hour
+    if weekday == WEEKEND_START_WEEKDAY and hour >= WEEKEND_START_HOUR:
+        return True
+    if weekday in (5, 6):  # Saturday, Sunday
+        return True
+    if weekday == WEEKEND_END_WEEKDAY and hour < WEEKEND_END_HOUR:
+        return True
+    return False
+
+
+async def apply_weekend_boost_role():
+    role_id = WEEKEND_BOOST_ROLE_ID
+    if not role_id:
+        print("⚠️ WEEKEND_BOOST_ROLE_ID is not set — skipping weekend boost role assignment.")
+        return
+
+    for guild in bot.guilds:
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+        for member in guild.members:
+            if member.bot:
+                continue
+            if role not in member.roles:
+                try:
+                    await member.add_roles(role, reason="Weekend XP boost started")
+                except Exception as e:
+                    print(f"⚠️ Failed to add weekend boost role to {member}: {e}")
+
+    await announce_weekend_boost(
+        "🎉 Weekend XP Boost is live!",
+        "Everyone's been given the weekend boost role — chat away and enjoy the bonus XP all weekend!",
+        discord.Color.gold()
+    )
+
+
+async def remove_weekend_boost_role():
+    role_id = WEEKEND_BOOST_ROLE_ID
+    if not role_id:
+        return
+
+    for guild in bot.guilds:
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+        for member in guild.members:
+            if role in member.roles:
+                try:
+                    await member.remove_roles(role, reason="Weekend XP boost ended")
+                except Exception as e:
+                    print(f"⚠️ Failed to remove weekend boost role from {member}: {e}")
+
+    await announce_weekend_boost(
+        "🛑 Weekend XP Boost has ended",
+        "The weekend boost role has been removed from everyone. See you next weekend!",
+        discord.Color.red()
+    )
+
+
+async def announce_weekend_boost(title, description, color):
+    if not WEEKEND_BOOST_ANNOUNCE_CHANNEL_ID:
+        return
+    channel = bot.get_channel(WEEKEND_BOOST_ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return
+    try:
+        await channel.send(embed=discord.Embed(title=title, description=description, color=color))
+    except discord.errors.Forbidden:
+        print(f"⚠️ Permissions Block: weekend boost announce channel ({WEEKEND_BOOST_ANNOUNCE_CHANNEL_ID}).")
+
+
+@tasks.loop(minutes=15)
+async def weekend_boost_loop():
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    state = load_weekend_state()
+
+    if _now_in_weekend_window(now_utc) and state != "active":
+        await apply_weekend_boost_role()
+        save_weekend_state("active")
+    elif not _now_in_weekend_window(now_utc) and state == "active":
+        await remove_weekend_boost_role()
+        save_weekend_state("inactive")
+
+
+@weekend_boost_loop.before_loop
+async def before_weekend_boost_loop():
+    await bot.wait_until_ready()
+
+
+# ============================================================
 # EVENTS
 # ============================================================
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
     await bot.tree.sync()
+    if not weekend_boost_loop.is_running():
+        weekend_boost_loop.start()
 
 
 @bot.event
@@ -328,6 +461,49 @@ async def resetpersona(interaction: discord.Interaction):
 
     reset_persona()
     await interaction.response.send_message("🔄 Reset to the default persona.", ephemeral=True)
+
+
+# ============================================================
+# OWNER SLASH COMMANDS — WEEKEND BOOST ROLE (manual testing)
+# ============================================================
+@bot.tree.command(name="startweekendboost", description="[OWNER ONLY] Manually trigger the weekend boost role for everyone now.")
+async def startweekendboost(interaction: discord.Interaction):
+    if not is_owner(interaction.user.id):
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
+        return
+    if not WEEKEND_BOOST_ROLE_ID:
+        await interaction.response.send_message("❌ WEEKEND_BOOST_ROLE_ID isn't set yet.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("⏳ Adding the boost role to everyone, this may take a moment...", ephemeral=True)
+    await apply_weekend_boost_role()
+    save_weekend_state("active")
+    await interaction.followup.send("✅ Done.", ephemeral=True)
+
+
+@bot.tree.command(name="endweekendboost", description="[OWNER ONLY] Manually remove the weekend boost role from everyone now.")
+async def endweekendboost(interaction: discord.Interaction):
+    if not is_owner(interaction.user.id):
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
+        return
+    if not WEEKEND_BOOST_ROLE_ID:
+        await interaction.response.send_message("❌ WEEKEND_BOOST_ROLE_ID isn't set yet.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("⏳ Removing the boost role from everyone, this may take a moment...", ephemeral=True)
+    await remove_weekend_boost_role()
+    save_weekend_state("inactive")
+    await interaction.followup.send("✅ Done.", ephemeral=True)
+
+
+@bot.tree.command(name="weekendboostatus", description="[OWNER ONLY] Check whether the weekend boost role is currently active.")
+async def weekendboostatus(interaction: discord.Interaction):
+    if not is_owner(interaction.user.id):
+        await interaction.response.send_message("❌ Ownership credentials required. Command locked.", ephemeral=True)
+        return
+
+    state = load_weekend_state()
+    await interaction.response.send_message(f"Current weekend boost state: **{state}**", ephemeral=True)
 
 
 # Start health check server in background thread, then launch bot
